@@ -107,3 +107,292 @@
       padding: 18px 0;
     }
     #submitBtn { width: 100%; padding
+: 14px; font-size: 16px; }
+    #message { margin-top: 14px; font-size: 14px; line-height: 1.7; }
+    .result { line-height: 1.9; overflow-wrap: anywhere; }
+    .order-number { font-size: 34px; font-weight: 900; color: var(--green); }
+    .token {
+      background: #f3f2eb;
+      padding: 10px;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .hidden { display: none; }
+    footer { text-align: center; color: var(--muted); font-size: 12px; padding: 10px 20px 30px; }
+    @media (max-width: 480px) {
+      h1 { font-size: 25px; }
+      .cart-row { grid-template-columns: minmax(0, 1fr) auto; }
+      .cart-row .subtotal { grid-column: 1 / -1; text-align: right; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="tag">SCHOOL FAIR · ORDER ONLINE</div>
+    <h1>🌿 園遊會點餐系統</h1>
+    <p>選好喜歡的商品，再到櫃檯付款取餐！</p>
+  </header>
+
+  <main>
+    <div class="notice">
+      <strong>📣 點餐小提醒</strong><br>
+      送出訂單後，請記下訂單編號與查詢密鑰。<br>
+      請至櫃檯以現金付款，付款後才會開始製作。
+    </div>
+
+    <div class="section-title">
+      <h2>🍊 今日商品</h2>
+      <button id="refreshBtn" type="button" style="background:#e9eee8;color:#27352f">重新整理</button>
+    </div>
+    <div id="storeStatus" class="muted">正在確認營業狀態⋯</div>
+    <div id="products" style="margin-top:14px"></div>
+
+    <div class="section-title">
+      <h2>🛒 我的購物車</h2>
+      <span id="cartCount" class="muted">0 件商品</span>
+    </div>
+    <div class="cart">
+      <div id="cartItems" class="muted">還沒有選購商品。</div>
+      <div class="total">
+        <span>總計</span>
+        <span id="total">NT$ 0</span>
+      </div>
+      <button id="submitBtn" type="button" disabled>確認送出訂單</button>
+      <div id="message" role="status"></div>
+    </div>
+
+    <div id="result" class="result hidden" aria-live="polite"></div>
+  </main>
+
+  <footer>園遊會點餐系統 · 請依現場工作人員指示付款與取餐</footer>
+
+  <script>
+    const SUPABASE_URL = "請填入你的 Project URL";
+    const SUPABASE_KEY = "請填入你的 Publishable key";
+
+    const $ = (id) => document.getElementById(id);
+    let products = [];
+    let cart = {};
+    let orderingOpen = false;
+    let submitting = false;
+    let retryKey = null;
+
+    const money = (amount) => "NT$ " + Number(amount).toLocaleString("zh-TW");
+
+    function setMessage(text, isError = false) {
+      $("message").textContent = text;
+      $("message").style.color = isError ? "#b34a40" : "#416b55";
+    }
+
+    function configured() {
+      return !SUPABASE_URL.includes("請填入") &&
+             !SUPABASE_KEY.includes("請填入");
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(SUPABASE_URL + path, {
+        ...options,
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: "Bearer " + SUPABASE_KEY,
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...options.headers
+        }
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.message || data?.error || "連線失敗，請稍後再試。");
+      }
+      return data;
+    }
+
+    async function loadStore() {
+      $("refreshBtn").disabled = true;
+      $("storeStatus").textContent = "正在載入商品⋯";
+      try {
+        if (!configured()) {
+          $("storeStatus").textContent = "請先填入 Supabase Project URL 和 Publishable key。";
+          $("products").innerHTML = "";
+          return;
+        }
+        const [items, settings] = await Promise.all([
+          api("/rest/v1/products?select=id,name,price,is_sold_out,sort_order&is_active=eq.true&order=sort_order.asc"),
+          api("/rest/v1/app_settings?select=ordering_open&id=eq.true")
+        ]);
+        products = items || [];
+        orderingOpen = settings?.[0]?.ordering_open === true;
+        $("storeStatus").textContent = orderingOpen
+          ? "🟢 目前開放點餐" : "🔴 目前暫停點餐，請稍後再來";
+        renderProducts();
+        renderCart();
+      } catch (error) {
+        $("storeStatus").textContent = "目前無法載入資料：" + error.message;
+      } finally {
+        $("refreshBtn").disabled = false;
+      }
+    }
+
+    function renderProducts() {
+      const container = $("products");
+      container.innerHTML = "";
+      if (!products.length) {
+        container.textContent = "目前沒有上架的商品。";
+        return;
+      }
+      products.forEach((product) => {
+        const unavailable = product.is_sold_out || !orderingOpen;
+        const card = document.createElement("article");
+        card.className = "product";
+        const title = document.createElement("h3");
+        title.textContent = product.name;
+        const price = document.createElement("div");
+        price.className = "price";
+        price.textContent = money(product.price);
+        const button = document.createElement("button");
+        button.textContent = product.is_sold_out ? "已售完" : !orderingOpen ? "暫停點餐" : "加入購物車";
+        button.disabled = unavailable || submitting;
+        button.addEventListener("click", () => addToCart(product.id));
+        card.append(title, price);
+        if (product.is_sold_out) {
+          const sold = document.createElement("div");
+          sold.className = "sold";
+          sold.textContent = "此商品暫時售完";
+          card.append(sold);
+        }
+        card.append(button);
+        container.append(card);
+      });
+    }
+
+    function addToCart(id) {
+      const product = products.find((p) => p.id === id);
+      if (!product || product.is_sold_out || !orderingOpen) return;
+      cart[id] = (cart[id] || 0) + 1;
+      retryKey = null;
+      renderCart();
+      setMessage("");
+    }
+
+    function changeQty(id, delta) {
+      const next = (cart[id] || 0) + delta;
+      if (next <= 0) delete cart[id];
+      else if (next <= 99) cart[id] = next;
+      retryKey = null;
+      renderCart();
+    }
+
+    function renderCart() {
+      const container = $("cartItems");
+      container.innerHTML = "";
+      let total = 0;
+      let count = 0;
+      const ids = Object.keys(cart);
+      if (!ids.length) container.textContent = "還沒有選購商品。";
+      ids.forEach((id) => {
+        const product = products.find((p) => p.id === id);
+        if (!product) return;
+        const qty = cart[id];
+        const subtotal = product.price * qty;
+        total += subtotal;
+        count += qty;
+        const row = document.createElement("div");
+        row.className = "cart-row";
+        const name = document.createElement("div");
+        name.textContent = product.name;
+        const qtyBox = document.createElement("div");
+        qtyBox.className = "qty";
+        const minus = document.createElement("button");
+        minus.textContent = "−";
+        minus.setAttribute("aria-label", "減少" + product.name + "數量");
+        minus.disabled = submitting;
+        minus.onclick = () => changeQty(id, -1);
+        const number = document.createElement("span");
+        number.textContent = qty;
+        const plus = document.createElement("button");
+        plus.textContent = "+";
+        plus.setAttribute("aria-label", "增加" + product.name + "數量");
+        plus.disabled = submitting || qty >= 99;
+        plus.onclick = () => changeQty(id, 1);
+        qtyBox.append(minus, number, plus);
+        const sub = document.createElement("div");
+        sub.className = "subtotal";
+        sub.textContent = money(subtotal);
+        row.append(name, qtyBox, sub);
+        container.append(row);
+      });
+      $("cartCount").textContent = count + " 件商品";
+      $("total").textContent = money(total);
+      $("submitBtn").disabled = !orderingOpen || count === 0 || submitting;
+      $("submitBtn").textContent = submitting ? "正在送出⋯" : "確認送出訂單";
+    }
+
+    async function submitOrder() {
+      if (submitting || !orderingOpen || !Object.keys(cart).length) return;
+      submitting = true;
+      renderProducts();
+      renderCart();
+      setMessage("正在安全地建立訂單，請稍候⋯");
+      try {
+        if (!retryKey) retryKey = crypto.randomUUID();
+        const items = Object.entries(cart).map(([product_id, quantity]) => ({ product_id, quantity }));
+        const response = await api("/functions/v1/place-order", {
+          method: "POST",
+          body: JSON.stringify({ items, idempotency_key: retryKey })
+        });
+        const order = response.order;
+        if (!order?.order_number || !order?.lookup_token) {
+          throw new Error("訂單回覆格式不正確，請先聯絡櫃檯確認。");
+        }
+        cart = {};
+        retryKey = null;
+        renderCart();
+        $("result").classList.remove("hidden");
+        $("result").innerHTML = "";
+        const heading = document.createElement("h2");
+        heading.textContent = "🎉 訂單建立成功！";
+        const label = document.createElement("div");
+        label.textContent = "你的訂單編號";
+        const number = document.createElement("div");
+        number.className = "order-number";
+        number.textContent = order.order_number;
+        const total = document.createElement("p");
+        total.textContent = "訂單總額：" + money(order.total_amount);
+        const instruction = document.createElement("p");
+        instruction.textContent = "請記下以下查詢密鑰。它和訂單編號一起用來查詢狀態，請勿分享給其他人。";
+        const token = document.createElement("div");
+        token.className = "token";
+        token.textContent = order.lookup_token;
+        const copy = document.createElement("button");
+        copy.textContent = "複製查詢密鑰";
+        copy.style.marginTop = "10px";
+        copy.onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(order.lookup_token);
+            copy.textContent = "已複製";
+          } catch {
+            instruction.textContent = "請手動複製上方查詢密鑰並妥善保存。";
+          }
+        };
+        const pay = document.createElement("p");
+        pay.textContent = "💵 請到櫃檯以現金付款，付款後工作人員才會開始製作。";
+        $("result").append(heading, label, number, total, instruction, token, copy, pay);
+        setMessage("");
+        $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+        await loadStore();
+      } catch (error) {
+        setMessage(error.message + " 若不確定訂單是否建立成功，請先向櫃檯確認，再決定是否重試。", true);
+      } finally {
+        submitting = false;
+        renderProducts();
+        renderCart();
+      }
+    }
+
+    $("refreshBtn").addEventListener("click", loadStore);
+    $("submitBtn").addEventListener("click", submitOrder);
+    loadStore();
+  </script>
+</body>
+</html>
