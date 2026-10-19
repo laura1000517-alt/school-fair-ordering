@@ -1,0 +1,264 @@
+
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>店員管理後台</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px 16px;
+      font-family: system-ui, sans-serif;
+      background: #f5f6fa;
+      color: #222;
+    }
+    main { max-width: 900px; margin: auto; }
+    h1 { margin-bottom: 8px; }
+    .muted { color: #666; font-size: 14px; }
+    .panel, .product {
+      background: white;
+      border: 1px solid #e4e5eb;
+      border-radius: 14px;
+      padding: 18px;
+      margin: 16px 0;
+    }
+    input, button {
+      font: inherit;
+      padding: 11px;
+      border-radius: 8px;
+    }
+    input {
+      width: 100%;
+      border: 1px solid #ccc;
+      margin: 6px 0 12px;
+    }
+    button {
+      border: 0;
+      background: #263c70;
+      color: white;
+      cursor: pointer;
+      margin: 4px 4px 4px 0;
+    }
+    button:disabled { opacity: .55; cursor: wait; }
+    .secondary { background: #e8eaf1; color: #222; }
+    .status { min-height: 24px; white-space: pre-wrap; }
+    .product-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 14px;
+    }
+    .product { margin: 0; }
+    .product img {
+      display: block;
+      width: 100%;
+      height: 170px;
+      object-fit: contain;
+      background: #f5f6fa;
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    label { display: block; font-size: 14px; font-weight: 600; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>🧾 店員管理後台</h1>
+  <p class="muted">管理商品資料與照片網址</p>
+
+  <section class="panel" id="loginPanel">
+    <h2>店員登入</h2>
+    <label for="password">管理密碼</label>
+    <input id="password" type="password"
+      autocomplete="current-password"
+      placeholder="輸入管理密碼">
+    <button id="loginButton">登入並載入商品</button>
+    <p id="loginStatus" class="status" role="status"></p>
+  </section>
+
+  <section id="manager" class="hidden">
+    <div class="panel">
+      <button id="reloadButton" class="secondary">重新載入商品</button>
+      <button id="logoutButton" class="secondary">登出</button>
+      <p class="muted">
+        目前版本先提供商品資料檢視。儲存功能完成後，
+        店員就能直接修改商品。
+      </p>
+      <p id="managerStatus" class="status" role="status"></p>
+    </div>
+    <div id="products" class="product-grid"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const API_URL =
+    "https://tgyxrwhktxiqqgnpoqjo.supabase.co/functions/v1/admin-api";
+  const PUBLISHABLE_KEY = "sb_publishable_C17RgGJgfxzWfVOm1SXYXA_JO2xF3nI";
+
+  const $ = (id) => document.getElementById(id);
+  let adminPassword = "";
+
+  function showStatus(id, message) {
+    $(id).textContent = message;
+  }
+
+  async function callAdmin(action) {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": PUBLISHABLE_KEY,
+        "x-admin-password": adminPassword
+      },
+      body: JSON.stringify({ action })
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || `請求失敗（${response.status}）`
+      );
+    }
+
+    return result;
+  }
+
+  function safeImageUrl(value) {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function renderProducts(products) {
+    const container = $("products");
+    container.replaceChildren();
+
+    if (!products.length) {
+      container.textContent = "目前沒有商品。";
+      return;
+    }
+
+    for (const product of products) {
+      const card = document.createElement("article");
+      card.className = "product";
+
+      const image = document.createElement("img");
+      image.alt = product.name || "商品照片";
+      image.loading = "lazy";
+
+      const imageUrl = safeImageUrl(product.image_url || "");
+      if (imageUrl) {
+        image.src = imageUrl;
+        image.onerror = () => {
+          image.removeAttribute("src");
+          image.alt = "照片無法載入";
+        };
+      } else {
+        image.alt = "尚未設定商品照片";
+      }
+
+      const name = document.createElement("h3");
+      name.textContent = product.name;
+
+      const price = document.createElement("p");
+      price.textContent = `價格：NT$${product.price}`;
+
+      const status = document.createElement("p");
+      status.textContent = product.is_sold_out
+        ? "商品狀態：售完"
+        : product.is_active
+          ? "商品狀態：販售中"
+          : "商品狀態：已下架";
+
+      const photoLabel = document.createElement("label");
+      photoLabel.textContent = "商品照片網址";
+
+      const photoInput = document.createElement("input");
+      photoInput.type = "url";
+      photoInput.placeholder = "之後可在這裡貼上 HTTPS 照片網址";
+      photoInput.value = product.image_url || "";
+      photoInput.disabled = true;
+
+      const note = document.createElement("p");
+      note.className = "muted";
+      note.textContent = "照片網址編輯功能尚未啟用。";
+
+      card.append(image, name, price, status, photoLabel,
+        photoInput, note);
+      container.append(card);
+    }
+  }
+
+  async function loadProducts() {
+    $("reloadButton").disabled = true;
+    showStatus("managerStatus", "正在載入商品……");
+
+    try {
+      const result = await callAdmin("list_products");
+      renderProducts(result.products || []);
+      showStatus("managerStatus",
+        `已載入 ${result.products.length} 項商品。`);
+    } catch (error) {
+      showStatus("managerStatus", error.message);
+      if (error.message.includes("Incorrect password")) {
+        logout();
+      }
+    } finally {
+      $("reloadButton").disabled = false;
+    }
+  }
+
+  function logout() {
+    adminPassword = "";
+    $("password").value = "";
+    $("manager").classList.add("hidden");
+    $("loginPanel").classList.remove("hidden");
+    $("products").replaceChildren();
+    showStatus("loginStatus", "已登出。");
+  }
+
+  $("loginButton").addEventListener("click", async () => {
+    const password = $("password").value;
+    if (!password) {
+      showStatus("loginStatus", "請先輸入管理密碼。");
+      return;
+    }
+
+    adminPassword = password;
+    $("loginButton").disabled = true;
+    showStatus("loginStatus", "正在驗證……");
+
+    try {
+      const result = await callAdmin("list_products");
+      $("loginPanel").classList.add("hidden");
+      $("manager").classList.remove("hidden");
+      renderProducts(result.products || []);
+      showStatus("managerStatus",
+        `登入成功，已載入 ${result.products.length} 項商品。`);
+    } catch (error) {
+      adminPassword = "";
+      showStatus("loginStatus",
+        error.message || "登入失敗，請稍後再試。");
+    } finally {
+      $("loginButton").disabled = false;
+    }
+  });
+
+  $("password").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") $("loginButton").click();
+  });
+  $("reloadButton").addEventListener("click", loadProducts);
+  $("logoutButton").addEventListener("click", logout);
+})();
+</script>
+</body>
+</html>
